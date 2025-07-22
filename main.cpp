@@ -13,6 +13,7 @@
 #include <string>
 #include <regex>
 #include <filesystem>
+#include <variant>
 
 // --- CONFIG ---
 const int SCREEN_WIDTH = 1280; // Width of the window
@@ -39,39 +40,21 @@ void ToWorldCoordinates(float mouseX, float mouseY, float size_offset, float pan
     worldY = static_cast<float>((mouseY / size_offset) + pan_offset_y);
 }
 
-struct Icon{
-    SDL_Texture* icon_texture;
-    SDL_FPoint position;
-    SDL_FPoint center;
-    float width, height;
-    float scale=1.0f;
-    double angle=0.0;
-    int icon_id;
+double distanceSquared(double x1, double y1, double x2, double y2) {
+    return (x1 - x2) * (x1 - x2) + (y1 - y2) * (y1 - y2);
+}
 
-    SDL_FRect viewport_local;
+struct IconBase {
+    virtual ~IconBase() = default;
 
-    void set_texture(SDL_Renderer* renderer, std::string filename_string){
-        const char* char_buffer = filename_string.c_str();
-        SDL_Surface* img_surface = IMG_Load(char_buffer);
-        SDL_Texture* tex_buffer = SDL_CreateTextureFromSurface(renderer, img_surface);
-        icon_texture = tex_buffer;
-        SDL_SetTextureScaleMode(icon_texture, SDL_SCALEMODE_NEAREST);
-        width = img_surface->w;
-        height = img_surface->h;
-        SDL_DestroySurface(img_surface);
-    }
+    virtual SDL_FPoint GetPosition() const = 0;
+    virtual int GetIconId() const = 0;
 
-    void render_to_view(SDL_Renderer* renderer, SDL_FRect* viewport_output, float scale_offset, float pan_offset_x, float pan_offset_y){
-        viewport_local.x = float((position.x / scale_offset) - pan_offset_x * scale_offset);
-        viewport_local.y = float((position.y / scale_offset) - pan_offset_y * scale_offset);
-        viewport_local.w = float((width*scale_offset));
-        viewport_local.h = float((height*scale_offset));
-        center = { viewport_local.w * 0.5f, viewport_local.h * 0.5f };
-        SDL_RenderTextureRotated(renderer, icon_texture, NULL, &viewport_local, angle, &center, SDL_FLIP_NONE);
-    }
+    virtual void set_texture(SDL_Renderer* renderer, std::unordered_map<int, std::string>& id_map) = 0;
+    virtual void render_to_view(SDL_Renderer* renderer, SDL_FRect* viewport_output, float scale_offset, float pan_offset_x, float pan_offset_y) = 0;
 };
 
-struct IconCivilian{
+struct IconCivilian : public IconBase {
     SDL_Texture* icon_texture;
     SDL_FPoint position;
     SDL_FPoint center;
@@ -80,6 +63,14 @@ struct IconCivilian{
     int icon_id;
 
     SDL_FRect viewport_local;
+
+    SDL_FPoint GetPosition() const override {
+        return position;
+    }
+
+    int GetIconId() const override {
+        return icon_id;
+    }
 
     void set_texture(SDL_Renderer* renderer, std::unordered_map<int, std::string>& id_map){
         if(icon_id){
@@ -121,7 +112,7 @@ struct IconCivilian{
     }
 };
 
-struct IconMilitary{
+struct IconMilitary : public IconBase {
     SDL_Texture* icon_texture;
     SDL_FPoint position;
     SDL_FPoint center;
@@ -131,6 +122,14 @@ struct IconMilitary{
     int icon_id;
 
     SDL_FRect viewport_local;
+
+    SDL_FPoint GetPosition() const override {
+        return position;
+    }
+
+    int GetIconId() const override {
+        return icon_id;
+    }
 
     void set_texture(SDL_Renderer* renderer, std::unordered_map<int, std::string>& id_map){
         if(icon_id){
@@ -179,7 +178,7 @@ struct IconLayer{
 
     std::vector<IconCivilian> IconsCivilian;
     std::vector<IconMilitary> IconsMilitary;
-    std::vector<Icon> IconsMarker;
+    // std::vector<Icon> IconsMarker;
 
     IconCivilian& create_civilian_icon(SDL_Renderer* renderer, int icon_id, float pos_x, float pos_y, std::unordered_map<int, std::string>& idmap){
         IconCivilian icon;
@@ -212,11 +211,26 @@ struct WorldLayer{
     SDL_Texture* layer_texture;
 };
 
+IconCivilian* FindClosestCivilianIcon(std::vector<IconCivilian>& vector_items, double targetX, double targetY) {
+    double minDist = std::numeric_limits<double>::max();
+    IconCivilian* closest_icon = nullptr;
+
+    for (auto& icon : vector_items) {
+        double dist = distanceSquared(icon.position.x, icon.position.y, targetX, targetY);
+        if (dist < minDist) {
+            minDist = dist;
+            closest_icon = &icon;
+        }
+    }
+
+    return closest_icon;
+}
+
 class World{
     private:
         std::vector<IconLayer> IconLayers;
         std::vector<WorldLayer> WorldLayers;
-        std::string last_created_layer_name = "placeholder";
+        std::string last_created_layer_name = "undefined";
 
     public:
         int UPPER_WORLD_WIDTH; // number of chunks along the X-axis, i.e bigger sections of tiles
@@ -279,27 +293,24 @@ class World{
         std::unordered_map<int, std::string> CivilianIdMap;
         std::unordered_map<int, std::string> MilitaryIdMap;
         std::unordered_map<int, std::string> MarkerIdMap;
+        
+        IconBase* selected_world_icon = nullptr;
 
         void toggle_visibility_layer(const std::string& name_id) {
-            bool layer_type = get_layer_type(name_id);
-            if(layer_type){
-                auto& it = get_worldlayer(name_id);
+            if(get_layer_type(name_id)){
+                WorldLayer& it = get_worldlayer(name_id);
                 it.visible = !it.visible;
                 std::cout<<"Debug::WorldLayer::Visibility::"<<it.visible<<std::endl;
             } else {
-                auto& it = get_iconlayer(name_id);
+                IconLayer& it = get_iconlayer(name_id);
                 it.visible = !it.visible;
                 std::cout<<"Debug::IconLayer::Visibility::"<<it.visible<<std::endl;
             }
         }
 
-        const std::vector<WorldLayer>& GetWorldLayers() const {
-            return WorldLayers;
-        }
+        std::vector<IconLayer>& GetIconLayers() { return IconLayers; }
 
-        const std::vector<IconLayer>& GetIconLayers() const {
-            return IconLayers;
-        }
+        std::vector<WorldLayer>& GetWorldLayers() { return WorldLayers; }
 
         void MoveIconLayer(size_t index, bool down) {
             if(down){
@@ -549,9 +560,9 @@ class World{
                     for (auto& icon : icon_layer.IconsMilitary) {
                         icon.render_to_view(renderer, output_viewport, scale_offset, pan_offset_x, pan_offset_y);
                     }
-                    for (auto& icon : icon_layer.IconsMarker) {
-                        icon.render_to_view(renderer, output_viewport, scale_offset, pan_offset_x, pan_offset_y);
-                    }
+                    // for (auto& icon : icon_layer.IconsMarker) {
+                    //     icon.render_to_view(renderer, output_viewport, scale_offset, pan_offset_x, pan_offset_y);
+                    // }
                 };
             };
         };
@@ -597,11 +608,6 @@ int main(int argc, char* args[]) {
     auto [world_width_upper, world_height_upper] = world.get_world_size(true);
     auto [chunk_width, chunk_height] = world.get_chunk_size();
 
-    world.create_worldlayer(renderer, "lower_biome_layer", false);
-    world.create_worldlayer(renderer, "upper_biome_layer", true);
-    auto& iconlayer = world.create_iconlayer("iconsforlife");
-    iconlayer.create_civilian_icon(renderer, 1, 64, 64, world.CivilianIdMap);
-
     // ---
 
     // IMGUI
@@ -625,10 +631,13 @@ int main(int argc, char* args[]) {
 
     // constants for navigation
     std::string selected_layer;
+    int selected_icon_id;
+    int selected_icon_class;
     int selected_tile_id = 0;
     float size_offset = 1.0f;
     float pan_offset_x = 0.0f;
     float pan_offset_y = 0.0f;
+    bool popup = false;
 
     SDL_FRect texture_rect = {0, 0, (float)world_width_lower, (float)world_height_lower};
     SDL_FRect intersect;
@@ -716,13 +725,62 @@ int main(int argc, char* args[]) {
                         std::cout<<"Debug::LeftClick::SelectedLayer::Icon"<<std::endl;
 
                         IconLayer& referenced_layer = world.get_iconlayer(selected_layer);
-                        referenced_layer.create_civilian_icon(renderer, 1, mouse_worldX, mouse_worldY, world.CivilianIdMap);
+                        if(selected_icon_id){
+                            if(selected_icon_class==1){
+                                referenced_layer.create_civilian_icon(renderer, selected_icon_id, mouse_worldX, mouse_worldY, world.CivilianIdMap);
+                            }
+                            if(selected_icon_class==2){
+                                referenced_layer.create_military_icon(renderer, selected_icon_id, mouse_worldX, mouse_worldY, world.MilitaryIdMap);
+                            }
+                            if(selected_icon_class==3){
+                                std::cout<<"Debug::Placeholder"<<std::endl;
+                            }
                         }
+
+                        IconCivilian* closest_civilian = nullptr;
+                        IconMilitary* closest_military = nullptr;
+                        double MinDist = std::numeric_limits<double>::max();
+                        // ---
+                        for (auto& layer : world.GetIconLayers()) {
+                            for (auto& CivilianLayerIcon : layer.IconsCivilian) {
+                                double distance = distanceSquared(CivilianLayerIcon.position.x, CivilianLayerIcon.position.y, textureX, textureY);
+                                if(distance < MinDist){
+                                    MinDist = distance;
+                                    closest_civilian = &CivilianLayerIcon;
+                                    closest_military = nullptr;
+                                }
+                            }
+                            for (auto& MilitaryLayerIcon : layer.IconsMilitary) {
+                                double distance = distanceSquared(MilitaryLayerIcon.position.x, MilitaryLayerIcon.position.y, textureX, textureY);
+                                if(distance < MinDist){
+                                    MinDist = distance;
+                                    closest_civilian = nullptr;
+                                    closest_military = &MilitaryLayerIcon;
+                                }
+                            }
+                        }
+                        
+                        if (closest_civilian != nullptr) { world.selected_world_icon = closest_civilian;
+                        } else if (closest_military != nullptr) { world.selected_world_icon = closest_military; }
+
+                        }
+
                     } else {
                         std::cout<<"Debug::LeftClick::SelectedLayer::None"<<std::endl;
                     }
+
+                    if (world.selected_world_icon) {
+                        SDL_FPoint aiririai = world.selected_world_icon->GetPosition();
+                        std::cout << selected_icon_id << " " << selected_icon_class
+                                << " x=" << aiririai.x << " y=" << aiririai.y << std::endl;
+                    } else {
+                        std::cout << "No icon selected.\n";
+                    }
+
                 }
                 if (e.button.button == SDL_BUTTON_RIGHT) {
+                    selected_icon_id = 0;
+                    popup = !popup;
                     dragging = true;
                     lastMouseX = e.button.x;
                     lastMouseY = e.button.y;
@@ -782,6 +840,7 @@ int main(int argc, char* args[]) {
             if (e.type == SDL_EVENT_MOUSE_BUTTON_UP) {
                 if (e.button.button == SDL_BUTTON_RIGHT) {
                     dragging = false;
+                    popup = false;
                 }
             }
 
@@ -833,13 +892,13 @@ int main(int argc, char* args[]) {
                 upper = !upper;
             }
             ImGui::SameLine();
-            ImGui::Text(upper ? "Y" : "N");
+            ImGui::Text(upper ? "Yes" : "No");
 
             if(ImGui::Button("layer type##02")){
                 layer_type = !layer_type;
             }
             ImGui::SameLine();
-            ImGui::Text(layer_type ? "icon" : "world");
+            ImGui::Text(layer_type ? "Icon" : "World");
 
             if(ImGui::Button("create layer##03")){
                 if(layer_type){
@@ -870,7 +929,6 @@ int main(int argc, char* args[]) {
                             world.toggle_visibility_layer(layer_name);
                             std::cout << "Debug::ToggledVisibility::IconLayer::" << layer_name << std::endl;
                         }
-                        
                         ImGui::SameLine();
                         if (ImGui::Button(("+##" + layer_name).c_str())) {
                             world.MoveIconLayer(actual_index, false);
@@ -879,6 +937,8 @@ int main(int argc, char* args[]) {
                         if (ImGui::Button(("-##" + layer_name).c_str())) {
                             world.MoveIconLayer(actual_index, true);
                         }
+                        ImGui::SameLine();
+                        ImGui::Text(it->visible ? "Visible" : "Hidden");
                     }
 
                     ImGui::TreePop();
@@ -904,7 +964,6 @@ int main(int argc, char* args[]) {
                             world.toggle_visibility_layer(layer_name);
                             std::cout << "Debug::ToggledVisibility::WorldLayer::" << layer_name << std::endl;
                         }
-
                         ImGui::SameLine();
                         if (ImGui::Button(("+##" + layer_name).c_str())) {
                             world.MoveWorldLayer(actual_index, false);
@@ -913,6 +972,8 @@ int main(int argc, char* args[]) {
                         if (ImGui::Button(("-##" + layer_name).c_str())) {
                             world.MoveWorldLayer(actual_index, true);
                         }
+                        ImGui::SameLine();
+                        ImGui::Text(it->visible ? "Visible" : "Hidden");
                     }
 
                     ImGui::TreePop();
@@ -921,29 +982,132 @@ int main(int argc, char* args[]) {
                 ImGui::TreePop();
             }
 
+            ImGui::End();
+        }
+ 
+        if (popup)
+        {
+            ImGui::OpenPopup("dropdownmenu");
+        }
+        if (ImGui::BeginPopup("dropdownmenu"))
+        {
+            ImGui::Text("popup");
+            ImGui::Separator();
+
             if (ImGui::TreeNode("Biome ID selection")){
-                for (int i = 0; i <= 42; ++i) {
-                    auto [r, g, b] = world.TILE_ID_MAP[i];
-                    ImVec4 selection_color = ImVec4(r / 255.0f, g / 255.0f, b / 255.0f, 1.0f);
-                    if (ImGui::ColorButton(("##" + std::to_string(i)).c_str(), selection_color, 0, ImVec2(128, 64))){
-                        printf("Debug::SetID::%d\n", i);
-                        selected_tile_id = i;
+                for (int i = 0; i <= 255; ++i) {
+                    auto it = world.TILE_ID_MAP.find(i);
+                    if (it == world.TILE_ID_MAP.end()) {
+                        break;
+                    } else {
+                        auto [r, g, b] = it->second;
+                        ImVec4 selection_color = ImVec4(r / 255.0f, g / 255.0f, b / 255.0f, 1.0f);
+                        if (ImGui::ColorButton(("##" + std::to_string(i)).c_str(), selection_color, 0, ImVec2(32, 16))){
+                            printf("Debug::SetID::%d\n", i);
+                            selected_tile_id = i;
+                        }
+                        ImGui::SameLine(); ImGui::Text("ID:%d", i);
+
+                        if(i%2!=0){
+                            ImGui::SameLine();
+                        }
                     }
-                    ImGui::SameLine(); ImGui::Text("ID:%d", i);
                 }
 
                 ImGui::TreePop();
             }
 
-            ImGui::End();
-        }
- 
-        {
-            ImGui::Begin("Political palette");
+            if (ImGui::TreeNode("Civilian Icon selection")){
+                for (int i = 1; i <= 255; ++i) {
+                    std::string filename = world.CivilianIdMap[i];
+                    std::string filename_string = "icons/civilian/" + std::to_string(i) + "_" + filename + ".png";
+                    const char* char_buffer = filename_string.c_str();
+                    SDL_Surface* img_surface = IMG_Load(char_buffer);
+                    if (!img_surface) {
+                        // std::cerr << "IMG_Load failed for " << filename_string << ": " << SDL_GetError() << "<>" << i << std::endl;
+                        break;
+                    }else{
+                        SDL_Texture* tex_buffer = SDL_CreateTextureFromSurface(renderer, img_surface);
+                        if (!tex_buffer) {
+                            std::cerr << "SDL_CreateTextureFromSurface failed: " << SDL_GetError() << std::endl;
+                            SDL_DestroySurface(img_surface);  // always free surface if texture creation fails
+                        }
 
-            ImGui::Text("Political palette is not implemented yet.");
+                        ImVec2 icon_size = {32, 32};
+                        ImTextureID icon_texture_ref;
+                        if(ImGui::ImageButton(("##" + std::to_string(i)).c_str(), (ImTextureID)(intptr_t)tex_buffer, icon_size)){
+                            selected_icon_id = i;
+                            selected_icon_class = 1;
+                        }
 
-            ImGui::End();
+                        ImGui::SameLine(); ImGui::Text("ID:%d", i);
+                    }
+                }
+
+                ImGui::TreePop();
+            }
+
+            if (ImGui::TreeNode("Military Icon selection")){
+                for (int i = 1; i <= 255; ++i) {
+                    std::string filename = world.MilitaryIdMap[i];
+                    std::string filename_string = "icons/military/" + std::to_string(i) + "_" + filename + ".png";
+                    const char* char_buffer = filename_string.c_str();
+                    SDL_Surface* img_surface = IMG_Load(char_buffer);
+                    if (!img_surface) {
+                        // std::cerr << "IMG_Load failed for " << filename_string << ": " << SDL_GetError() << "<>" << i << std::endl;
+                        break;
+                    }else{
+                        SDL_Texture* tex_buffer = SDL_CreateTextureFromSurface(renderer, img_surface);
+                        if (!tex_buffer) {
+                            std::cerr << "SDL_CreateTextureFromSurface failed: " << SDL_GetError() << std::endl;
+                            SDL_DestroySurface(img_surface);  // always free surface if texture creation fails
+                        }
+
+                        ImVec2 icon_size = {32, 32};
+                        ImTextureID icon_texture_ref;
+                        if(ImGui::ImageButton(("##" + std::to_string(i)).c_str(), (ImTextureID)(intptr_t)tex_buffer, icon_size)){
+                            selected_icon_id = i;
+                            selected_icon_class = 2;
+                        }
+
+                        ImGui::SameLine(); ImGui::Text("ID:%d", i);
+                    }
+                }
+
+                ImGui::TreePop();
+            }
+
+            if (ImGui::TreeNode("Marker Icon selection")){
+                for (int i = 1; i <= 255; ++i) {
+                    std::string filename = world.MarkerIdMap[i];
+                    std::string filename_string = "icons/markers/" + std::to_string(i) + "_" + filename + ".png";
+                    const char* char_buffer = filename_string.c_str();
+                    SDL_Surface* img_surface = IMG_Load(char_buffer);
+                    if (!img_surface) {
+                        // std::cerr << "IMG_Load failed for " << filename_string << ": " << SDL_GetError() << "<>" << i << std::endl;
+                        break;
+                    }else{
+                        SDL_Texture* tex_buffer = SDL_CreateTextureFromSurface(renderer, img_surface);
+                        if (!tex_buffer) {
+                            std::cerr << "SDL_CreateTextureFromSurface failed: " << SDL_GetError() << std::endl;
+                            SDL_DestroySurface(img_surface);  // always free surface if texture creation fails
+                        }
+
+                        ImVec2 icon_size = {32, 32};
+                        ImTextureID icon_texture_ref;
+                        if(ImGui::ImageButton(("##" + std::to_string(i)).c_str(), (ImTextureID)(intptr_t)tex_buffer, icon_size)){
+                            selected_icon_id = i;
+                            selected_icon_class = 3;
+                        }
+
+                        ImGui::SameLine(); ImGui::Text("ID:%d", i);
+                    }
+                }
+
+                ImGui::TreePop();
+            }
+
+            ImGui::EndPopup();
         }
 
         ImVec4 background_color = ImVec4(0.1f, 0.1f, 0.1f, 1.0f);
