@@ -49,9 +49,21 @@ struct IconBase {
 
     virtual SDL_FPoint GetPosition() const = 0;
     virtual int GetIconId() const = 0;
+    virtual std::tuple<int, int> GetSize() const = 0;
+
+    virtual void SetPosition(float x_, float y_) = 0;
+    virtual void SetIconId(int id) = 0;
 
     virtual void set_texture(SDL_Renderer* renderer, std::unordered_map<int, std::string>& id_map) = 0;
+    virtual void add_decorator(SDL_Renderer* renderer, int id, std::unordered_map<int, std::string>& id_map) = 0;
     virtual void render_to_view(SDL_Renderer* renderer, SDL_FRect* viewport_output, float scale_offset, float pan_offset_x, float pan_offset_y) = 0;
+    virtual void clear_decorators() = 0;
+};
+
+struct IconDecorator{
+    SDL_Texture* decorator_texture;
+    float width, height;
+    int id;
 };
 
 struct IconCivilian : public IconBase {
@@ -64,13 +76,21 @@ struct IconCivilian : public IconBase {
 
     SDL_FRect viewport_local;
 
-    SDL_FPoint GetPosition() const override {
-        return position;
+    std::tuple<int, int> GetSize() const override {
+        std::tuple<int, int> output = {width, height};
+        return output;
     }
 
-    int GetIconId() const override {
-        return icon_id;
-    }
+    SDL_FPoint GetPosition() const override { return position; }
+
+    int GetIconId() const override { return icon_id; }
+
+    void SetPosition(float x_, float y_) {
+        position.x = x_;
+        position.y = y_;
+    } 
+
+    void SetIconId(int id) { icon_id = id; }
 
     void set_texture(SDL_Renderer* renderer, std::unordered_map<int, std::string>& id_map){
         if(icon_id){
@@ -103,25 +123,51 @@ struct IconCivilian : public IconBase {
         }
     }
 
+    void add_decorator(SDL_Renderer* renderer, int id, std::unordered_map<int, std::string>& id_map){
+        std::cout<<"Civilian doesn't have decorator, skipping."<<std::endl;
+    }
+
+    void clear_decorators(){
+        std::cout<<"Civilian doesn't have decorator, skipping."<<std::endl;
+    }
+
     void render_to_view(SDL_Renderer* renderer, SDL_FRect* viewport_output, float scale_offset, float pan_offset_x, float pan_offset_y){
-        viewport_local.x = float((position.x * scale_offset) - pan_offset_x * scale_offset);
-        viewport_local.y = float((position.y * scale_offset) - pan_offset_y * scale_offset);
-        viewport_local.w = float((width*scale_offset));
-        viewport_local.h = float((height*scale_offset));
+        scale = fmaxf(1.0f-(scale_offset/3), 0.05f);
+
+        float position_x_scaled = (float)position.x * scale_offset;
+        float position_y_scaled = (float)position.y * scale_offset;
+
+        float pan_x_scaled = (float)pan_offset_x * scale_offset;
+        float pan_y_scaled = (float)pan_offset_y * scale_offset;
+
+        float width_scaled = (float)(width*scale) * scale_offset;
+        float height_scaled = (float)(height*scale) * scale_offset;
+
+        viewport_local.x = position_x_scaled - pan_x_scaled - width_scaled / 2.0f;
+        viewport_local.y = position_y_scaled - pan_y_scaled - height_scaled / 2.0f;
+        viewport_local.w = width_scaled;
+        viewport_local.h = height_scaled;
         SDL_RenderTexture(renderer, icon_texture, NULL, &viewport_local);
     }
 };
 
 struct IconMilitary : public IconBase {
     SDL_Texture* icon_texture;
+    SDL_Texture* decorator_texture;
     SDL_FPoint position;
     SDL_FPoint center;
-    float width, height;
-    float scale=1.0f;
+    float width, height, scale=1.0f;
+    int icon_id, country_id, quality;
     double angle=0.0;
-    int icon_id;
+    std::vector<IconDecorator> decorators;
 
     SDL_FRect viewport_local;
+    SDL_FRect viewport_local_decorator;
+
+    std::tuple<int, int> GetSize() const override {
+        std::tuple<int, int> output = {width, height};
+        return output;
+    }
 
     SDL_FPoint GetPosition() const override {
         return position;
@@ -130,6 +176,13 @@ struct IconMilitary : public IconBase {
     int GetIconId() const override {
         return icon_id;
     }
+
+    void SetPosition(float x_, float y_) {
+        position.x = x_;
+        position.y = y_;
+    } 
+
+    void SetIconId(int id) { icon_id = id; }
 
     void set_texture(SDL_Renderer* renderer, std::unordered_map<int, std::string>& id_map){
         if(icon_id){
@@ -162,13 +215,72 @@ struct IconMilitary : public IconBase {
         }
     }
 
+    void add_decorator(SDL_Renderer* renderer, int id, std::unordered_map<int, std::string>& id_map){
+        auto found_item = id_map.find(id);
+        if (found_item != id_map.end()) {
+            std::string found_name = found_item->second;
+            std::string filename_string = "icons/decorator/" + std::to_string(id) + "_" + found_name + ".png";
+            const char* char_buffer = filename_string.c_str();
+            SDL_Surface* img_surface = IMG_Load(char_buffer);
+            if (!img_surface) {
+                std::cerr << "IMG_Load failed for " << filename_string << ": " << SDL_GetError() << std::endl;
+                return;
+            }
+            SDL_Texture* tex_buffer = SDL_CreateTextureFromSurface(renderer, img_surface);
+            if (!tex_buffer) {
+                std::cerr << "SDL_CreateTextureFromSurface failed: " << SDL_GetError() << std::endl;
+                SDL_DestroySurface(img_surface);  // always free surface if texture creation fails
+                return;
+            }
+            SDL_SetTextureScaleMode(tex_buffer, SDL_SCALEMODE_NEAREST);
+            IconDecorator decorator;
+            decorator.decorator_texture = tex_buffer;
+            decorator.id = id;
+            decorator.width = img_surface->w;
+            decorator.height = img_surface->h;
+            SDL_DestroySurface(img_surface);
+
+            decorators.push_back(decorator);
+        } else {
+            std::cout<<"Decorator id couldn't be found.";
+        }
+    }
+
+    void clear_decorators(){
+        decorators.clear();
+    }
+
     void render_to_view(SDL_Renderer* renderer, SDL_FRect* viewport_output, float scale_offset, float pan_offset_x, float pan_offset_y){
-        viewport_local.x = float((position.x * scale_offset) - pan_offset_x * scale_offset);
-        viewport_local.y = float((position.y * scale_offset) - pan_offset_y * scale_offset);
-        viewport_local.w = float((width*scale_offset));
-        viewport_local.h = float((height*scale_offset));
+        scale = fmaxf(1.0f-(scale_offset/3), 0.05f);
+
+        float position_x_scaled = (float)position.x * scale_offset;
+        float position_y_scaled = (float)position.y * scale_offset;
+
+        float pan_x_scaled = (float)pan_offset_x * scale_offset;
+        float pan_y_scaled = (float)pan_offset_y * scale_offset;
+
+        float width_scaled = (float)(width*scale) * scale_offset;
+        float height_scaled = (float)(height*scale) * scale_offset;
+
+        viewport_local.x = position_x_scaled - pan_x_scaled - width_scaled / 2.0f;
+        viewport_local.y = position_y_scaled - pan_y_scaled - height_scaled / 2.0f;
+        viewport_local.w = width_scaled;
+        viewport_local.h = height_scaled;
+
         center = { viewport_local.w * 0.5f, viewport_local.h * 0.5f };
         SDL_RenderTextureRotated(renderer, icon_texture, NULL, &viewport_local, angle, &center, SDL_FLIP_NONE);
+
+        int index = 1;
+        for (auto& decorator_icon : decorators) {
+            viewport_local_decorator.x = position_x_scaled - pan_x_scaled - width_scaled / 2.0f;
+            viewport_local_decorator.y = (position_y_scaled - pan_y_scaled - height_scaled / 2.0f)-height_scaled*index;
+            viewport_local_decorator.w = width_scaled;
+            viewport_local_decorator.h = height_scaled;
+
+            SDL_RenderTexture(renderer, decorator_icon.decorator_texture, NULL, &viewport_local_decorator);
+            index++;
+        }
+
     }
 };
 
@@ -233,12 +345,14 @@ class World{
         std::string last_created_layer_name = "undefined";
 
     public:
-        int UPPER_WORLD_WIDTH; // number of chunks along the X-axis, i.e bigger sections of tiles
-        int UPPER_WORLD_HEIGHT; // number of chunks along the Y-axis, i.e bigger sections of tiles
-        int CHUNK_WIDTH; // Number of tiles in a chunk along the X-axis
-        int CHUNK_HEIGHT; // Number of tiles in a chunk along the Y-axis
-        int LOWER_WORLD_WIDTH; // Total number of tiles along the X-axis
-        int LOWER_WORLD_HEIGHT; // Total number of tiles along the Y-axis
+        bool WORLD_HAS_INITIALIZED = false;
+
+        int UPPER_WORLD_WIDTH=0; // number of chunks along the X-axis, i.e bigger sections of tiles
+        int UPPER_WORLD_HEIGHT=0; // number of chunks along the Y-axis, i.e bigger sections of tiles
+        int CHUNK_WIDTH=0; // Number of tiles in a chunk along the X-axis
+        int CHUNK_HEIGHT=0; // Number of tiles in a chunk along the Y-axis
+        int LOWER_WORLD_WIDTH=0; // Total number of tiles along the X-axis
+        int LOWER_WORLD_HEIGHT=0; // Total number of tiles along the Y-axis
 
         float TILE_LENGTH; // Length of a tile in kilometers, used for measurements and grasping scale
         float WORLD_LENGTH; // Total equatorial length of the world in kilometers
@@ -293,8 +407,17 @@ class World{
         std::unordered_map<int, std::string> CivilianIdMap;
         std::unordered_map<int, std::string> MilitaryIdMap;
         std::unordered_map<int, std::string> MarkerIdMap;
+        std::unordered_map<int, std::string> DecoratorIdMap;
         
         IconBase* selected_world_icon = nullptr;
+
+        bool HasInitializedCheck() {
+            if(UPPER_WORLD_HEIGHT>0 && CHUNK_WIDTH>0){
+                return true;
+            } else {
+                return false;
+            }
+        }
 
         void toggle_visibility_layer(const std::string& name_id) {
             if(get_layer_type(name_id)){
@@ -349,7 +472,7 @@ class World{
                 }
             }
             for (const auto &[id, name] : CivilianIdMap) {
-                std::cout << "ID: " << id << " => Name: " << name << std::endl;
+                std::cout << "Civilian ID: " << id << " => Name: " << name << std::endl;
             }
 
             for (const auto &entry : std::filesystem::directory_iterator("icons/military")) {
@@ -366,7 +489,7 @@ class World{
                 }
             }
             for (const auto &[id, name] : MilitaryIdMap) {
-                std::cout << "ID: " << id << " => Name: " << name << std::endl;
+                std::cout << "Military ID: " << id << " => Name: " << name << std::endl;
             }
 
             for (const auto &entry : std::filesystem::directory_iterator("icons/markers")) {
@@ -383,7 +506,24 @@ class World{
                 }
             }
             for (const auto &[id, name] : MarkerIdMap) {
-                std::cout << "ID: " << id << " => Name: " << name << std::endl;
+                std::cout << "Marker ID: " << id << " => Name: " << name << std::endl;
+            }
+
+            for (const auto &entry : std::filesystem::directory_iterator("icons/decorator")) {
+                if (!entry.is_regular_file())
+                    continue;
+
+                std::string filename = entry.path().filename().string();
+                std::smatch matches;
+                
+                if (std::regex_match(filename, matches, pattern)) {
+                    int id = std::stoi(matches[1].str());
+                    std::string name = matches[2].str();
+                    DecoratorIdMap[id] = name;
+                }
+            }
+            for (const auto &[id, name] : DecoratorIdMap) {
+                std::cout << "Decorator ID: " << id << " => Name: " << name << std::endl;
             }
         }
 
@@ -499,6 +639,7 @@ class World{
         void set_world_size(int w, int h) {
             UPPER_WORLD_WIDTH = w;
             UPPER_WORLD_HEIGHT = h;
+            std::cout<<"Set world to "<<w<<" "<<h<<std::endl;
         }
 
         std::tuple<int, int> get_world_size(bool is_upper) {
@@ -525,6 +666,7 @@ class World{
 
             LOWER_WORLD_WIDTH = UPPER_WORLD_WIDTH*CHUNK_WIDTH;
             LOWER_WORLD_HEIGHT = UPPER_WORLD_HEIGHT*CHUNK_HEIGHT;
+            std::cout<<"Set chunks to "<<w<<" "<<h<<" resulting in lower "<<LOWER_WORLD_WIDTH<<" "<<LOWER_WORLD_HEIGHT<<std::endl;
         }
 
         std::tuple<int,int> get_chunk_size() {
@@ -602,11 +744,12 @@ int main(int argc, char* args[]) {
 
     World world;
     world.discover_icons();
-    world.set_world_size(600, 300);
-    world.set_chunk_size(20, 20);
-    auto [world_width_lower, world_height_lower] = world.get_world_size(false);
-    auto [world_width_upper, world_height_upper] = world.get_world_size(true);
-    auto [chunk_width, chunk_height] = world.get_chunk_size();
+    // world.set_world_size(600, 300);
+    // world.set_chunk_size(20, 20);
+    // auto [world_width_lower, world_height_lower] = world.get_world_size(false);
+    // auto [world_width_upper, world_height_upper] = world.get_world_size(true);
+    // auto [chunk_width, chunk_height] = world.get_chunk_size();
+    int world_width_lower=1, world_height_lower=1, world_width_upper=1, world_height_upper=1, chunk_width=1, chunk_height=1;
 
     // ---
 
@@ -631,6 +774,10 @@ int main(int argc, char* args[]) {
 
     // constants for navigation
     std::string selected_layer;
+    int selected_decorator_id;
+    bool moving_icon=false;
+    bool rotating_icon=false;
+    bool editing_map=false;
     int selected_icon_id;
     int selected_icon_class;
     int selected_tile_id = 0;
@@ -695,32 +842,34 @@ int main(int argc, char* args[]) {
                     if(!selected_layer.empty()){
                         bool selected_layer_type = world.get_layer_type(selected_layer);
                         if(selected_layer_type){ // IS WORLD_LAYER
-                            WorldLayer referenced_layer = world.get_worldlayer(selected_layer);
-                            bool is_upper_layer = referenced_layer.is_upper;
+                            if(editing_map){
+                                WorldLayer referenced_layer = world.get_worldlayer(selected_layer);
+                                bool is_upper_layer = referenced_layer.is_upper;
 
-                            int locking_coordinate_x, locking_coordinate_y;
-                            if(is_upper_layer){
-                                locking_coordinate_x = upper_textureX;
-                                locking_coordinate_y = upper_textureY;
-                                if (upper_textureX < 0 || upper_textureX >= world_width_upper || upper_textureY < 0 || upper_textureY >= world_height_upper) {
-                                    printf("Debug::LeftClick::OutOfBounds::(%d, %d)\n", upper_textureX, upper_textureY);
-                                    continue;
+                                int locking_coordinate_x, locking_coordinate_y;
+                                if(is_upper_layer){
+                                    locking_coordinate_x = upper_textureX;
+                                    locking_coordinate_y = upper_textureY;
+                                    if (upper_textureX < 0 || upper_textureX >= world_width_upper || upper_textureY < 0 || upper_textureY >= world_height_upper) {
+                                        printf("Debug::LeftClick::OutOfBounds::(%d, %d)\n", upper_textureX, upper_textureY);
+                                        continue;
+                                    }
+                                } else {
+                                    locking_coordinate_x = textureX;
+                                    locking_coordinate_y = textureY;
+                                    if (textureX < 0 || textureX >= world_width_lower || textureY < 0 || textureY >= world_height_lower) {
+                                        printf("Debug::LeftClick::OutOfBounds::(%d, %d)\n", textureX, textureY);
+                                        continue;
+                                    }
                                 }
-                            } else {
-                                locking_coordinate_x = textureX;
-                                locking_coordinate_y = textureY;
-                                if (textureX < 0 || textureX >= world_width_lower || textureY < 0 || textureY >= world_height_lower) {
-                                    printf("Debug::LeftClick::OutOfBounds::(%d, %d)\n", textureX, textureY);
-                                    continue;
-                                }
+
+                                lockRect = { locking_coordinate_x, locking_coordinate_y, 1, 1 };
+                                SDL_Texture* referenced_texture = referenced_layer.layer_texture;
+                                SDL_LockTexture(referenced_texture, &lockRect, (void**)&pixels, &pitch);
+                                Uint32 color = (Uint32(paint_color_r) << 24) | (Uint32(paint_color_g) << 16) | (Uint32(paint_color_b) << 8) | Uint32(255);
+                                pixels[0] = color;
+                                SDL_UnlockTexture(referenced_texture);
                             }
-
-                            lockRect = { locking_coordinate_x, locking_coordinate_y, 1, 1 };
-                            SDL_Texture* referenced_texture = referenced_layer.layer_texture;
-                            SDL_LockTexture(referenced_texture, &lockRect, (void**)&pixels, &pitch);
-                            Uint32 color = (Uint32(paint_color_r) << 24) | (Uint32(paint_color_g) << 16) | (Uint32(paint_color_b) << 8) | Uint32(255);
-                            pixels[0] = color;
-                            SDL_UnlockTexture(referenced_texture);
                         } else { // IS ICON_LAYER
                         std::cout<<"Debug::LeftClick::SelectedLayer::Icon"<<std::endl;
 
@@ -730,7 +879,10 @@ int main(int argc, char* args[]) {
                                 referenced_layer.create_civilian_icon(renderer, selected_icon_id, mouse_worldX, mouse_worldY, world.CivilianIdMap);
                             }
                             if(selected_icon_class==2){
-                                referenced_layer.create_military_icon(renderer, selected_icon_id, mouse_worldX, mouse_worldY, world.MilitaryIdMap);
+                                auto& icon_created = referenced_layer.create_military_icon(renderer, selected_icon_id, mouse_worldX, mouse_worldY, world.MilitaryIdMap);
+                                if(selected_decorator_id){
+                                    icon_created.add_decorator(renderer, selected_decorator_id, world.DecoratorIdMap);
+                                }
                             }
                             if(selected_icon_class==3){
                                 std::cout<<"Debug::Placeholder"<<std::endl;
@@ -739,7 +891,7 @@ int main(int argc, char* args[]) {
 
                         IconCivilian* closest_civilian = nullptr;
                         IconMilitary* closest_military = nullptr;
-                        double MinDist = std::numeric_limits<double>::max();
+                        double MinDist = 2048.0;
                         // ---
                         for (auto& layer : world.GetIconLayers()) {
                             for (auto& CivilianLayerIcon : layer.IconsCivilian) {
@@ -760,8 +912,13 @@ int main(int argc, char* args[]) {
                             }
                         }
                         
-                        if (closest_civilian != nullptr) { world.selected_world_icon = closest_civilian;
-                        } else if (closest_military != nullptr) { world.selected_world_icon = closest_military; }
+                        if (closest_civilian != nullptr){ 
+                            world.selected_world_icon = closest_civilian;
+                        } else if (closest_military != nullptr){ 
+                            world.selected_world_icon = closest_military; 
+                        } else {
+                            world.selected_world_icon = nullptr;
+                        }
 
                         }
 
@@ -769,7 +926,7 @@ int main(int argc, char* args[]) {
                         std::cout<<"Debug::LeftClick::SelectedLayer::None"<<std::endl;
                     }
 
-                    if (world.selected_world_icon) {
+                    if (world.selected_world_icon && !editing_map) {
                         SDL_FPoint aiririai = world.selected_world_icon->GetPosition();
                         std::cout << selected_icon_id << " " << selected_icon_class
                                 << " x=" << aiririai.x << " y=" << aiririai.y << std::endl;
@@ -793,34 +950,40 @@ int main(int argc, char* args[]) {
                     if(!selected_layer.empty()){
                         bool selected_layer_type = world.get_layer_type(selected_layer);
                         if(selected_layer_type){ // IS WORLD_LAYER
-                            WorldLayer referenced_layer = world.get_worldlayer(selected_layer);
-                            bool is_upper_layer = referenced_layer.is_upper;
+                            if(editing_map){
+                                WorldLayer referenced_layer = world.get_worldlayer(selected_layer);
+                                bool is_upper_layer = referenced_layer.is_upper;
 
-                            int locking_coordinate_x, locking_coordinate_y;
-                            if(is_upper_layer){
-                                locking_coordinate_x = upper_textureX;
-                                locking_coordinate_y = upper_textureY;
-                                if (upper_textureX < 0 || upper_textureX >= world_width_upper || upper_textureY < 0 || upper_textureY >= world_height_upper) {
-                                    printf("Debug::LeftClick::OutOfBounds::(%d, %d)\n", upper_textureX, upper_textureY);
-                                    continue;
+                                int locking_coordinate_x, locking_coordinate_y;
+                                if(is_upper_layer){
+                                    locking_coordinate_x = upper_textureX;
+                                    locking_coordinate_y = upper_textureY;
+                                    if (upper_textureX < 0 || upper_textureX >= world_width_upper || upper_textureY < 0 || upper_textureY >= world_height_upper) {
+                                        printf("Debug::LeftClick::OutOfBounds::(%d, %d)\n", upper_textureX, upper_textureY);
+                                        continue;
+                                    }
+                                } else {
+                                    locking_coordinate_x = textureX;
+                                    locking_coordinate_y = textureY;
+                                    if (textureX < 0 || textureX >= world_width_lower || textureY < 0 || textureY >= world_height_lower) {
+                                        printf("Debug::LeftClick::OutOfBounds::(%d, %d)\n", textureX, textureY);
+                                        continue;
+                                    }
                                 }
-                            } else {
-                                locking_coordinate_x = textureX;
-                                locking_coordinate_y = textureY;
-                                if (textureX < 0 || textureX >= world_width_lower || textureY < 0 || textureY >= world_height_lower) {
-                                    printf("Debug::LeftClick::OutOfBounds::(%d, %d)\n", textureX, textureY);
-                                    continue;
-                                }
+
+                                lockRect = { locking_coordinate_x, locking_coordinate_y, 1, 1 };
+                                SDL_Texture* referenced_texture = referenced_layer.layer_texture;
+                                SDL_LockTexture(referenced_texture, &lockRect, (void**)&pixels, &pitch);
+                                Uint32 color = (Uint32(paint_color_r) << 24) | (Uint32(paint_color_g) << 16) | (Uint32(paint_color_b) << 8) | Uint32(255);
+                                pixels[0] = color;
+                                SDL_UnlockTexture(referenced_texture);
                             }
-
-                            lockRect = { locking_coordinate_x, locking_coordinate_y, 1, 1 };
-                            SDL_Texture* referenced_texture = referenced_layer.layer_texture;
-                            SDL_LockTexture(referenced_texture, &lockRect, (void**)&pixels, &pitch);
-                            Uint32 color = (Uint32(paint_color_r) << 24) | (Uint32(paint_color_g) << 16) | (Uint32(paint_color_b) << 8) | Uint32(255);
-                            pixels[0] = color;
-                            SDL_UnlockTexture(referenced_texture);
                         } else { // IS ICON_LAYER
                             std::cout<<"Debug::LeftClickMotion::SelectedLayer::Icon"<<std::endl;
+                            if(world.selected_world_icon && moving_icon){
+                                auto [icon_width, icon_height] = world.selected_world_icon->GetSize();
+                                world.selected_world_icon->SetPosition(textureX-(float)icon_width/2, textureY-(float)icon_height/2);
+                            }
                         }
                     } else {
                         std::cout<<"Debug::LeftClickMotion::SelectedLayer::None"<<std::endl;
@@ -885,6 +1048,44 @@ int main(int argc, char* args[]) {
             static char buffer[32] = "";
             static bool upper = false;
             static bool layer_type = false;
+
+            static char world_width_buffer[6] = "600";
+            static char world_height_buffer[6] = "300";
+            static char chunk_width_buffer[6] = "20";
+            static char chunk_height_buffer[6] = "20";
+
+            if(!world.HasInitializedCheck()){
+                ImGui::Separator();
+                ImGui::TextColored(ImVec4(0.3f, 1.0f, 0.3f, 1.0f), "World creation");
+
+                ImGui::InputText("world width", world_width_buffer, sizeof(world_width_buffer));
+                ImGui::InputText("world height", world_height_buffer, sizeof(world_height_buffer));
+                ImGui::InputText("chunk width", chunk_width_buffer, sizeof(chunk_width_buffer));
+                ImGui::InputText("chunk height", chunk_height_buffer, sizeof(chunk_height_buffer));
+
+                ImGui::Text("Will result in lower world size of %d %d", atoi(world_width_buffer)*atoi(chunk_width_buffer), atoi(world_height_buffer)*atoi(chunk_height_buffer));
+
+                if(ImGui::Button("init world")){
+                    world.set_world_size(atoi(world_width_buffer), atoi(world_height_buffer));
+                    world.set_chunk_size(atoi(chunk_width_buffer), atoi(chunk_height_buffer));
+                    auto [world_width_lower_intermitent, world_height_lower_intermitent] = world.get_world_size(false);
+                    auto [world_width_upper_intermitent, world_height_upper_intermitent] = world.get_world_size(true);
+                    auto [chunk_width_intermitent, chunk_height_intermitent] = world.get_chunk_size();
+                    world_width_lower = world_width_lower_intermitent;
+                    world_height_lower = world_height_lower_intermitent;
+                    world_width_upper = world_width_upper_intermitent;
+                    world_height_upper = world_height_upper_intermitent;
+                    chunk_width = chunk_width_intermitent;
+                    chunk_height = chunk_height_intermitent;
+                    texture_rect.w = world_width_lower;
+                    texture_rect.h = world_height_lower;
+                }
+
+                ImGui::Separator();
+            }
+
+            ImGui::Separator();
+            ImGui::TextColored(ImVec4(0.3f, 1.0f, 0.3f, 1.0f), "World editing");
 
             ImGui::InputText("layer name##01",buffer,sizeof(buffer));
 
@@ -980,6 +1181,20 @@ int main(int argc, char* args[]) {
                 }
 
                 ImGui::TreePop();
+            }
+            ImGui::Separator();
+
+            if(world.selected_world_icon){
+                ImGui::Separator();
+                ImGui::TextColored(ImVec4(0.3f, 1.0f, 0.3f, 1.0f), "Icon parameters");
+
+                ImGui::Text("%d", world.selected_world_icon->GetIconId());
+
+                if(ImGui::Button("Wipe decorators")){
+                    world.selected_world_icon->clear_decorators();
+                }
+
+                ImGui::Separator();
             }
 
             ImGui::End();
@@ -1077,10 +1292,10 @@ int main(int argc, char* args[]) {
                 ImGui::TreePop();
             }
 
-            if (ImGui::TreeNode("Marker Icon selection")){
+            if (ImGui::TreeNode("Decorator Icon selection")){
                 for (int i = 1; i <= 255; ++i) {
-                    std::string filename = world.MarkerIdMap[i];
-                    std::string filename_string = "icons/markers/" + std::to_string(i) + "_" + filename + ".png";
+                    std::string filename = world.DecoratorIdMap[i];
+                    std::string filename_string = "icons/decorator/" + std::to_string(i) + "_" + filename + ".png";
                     const char* char_buffer = filename_string.c_str();
                     SDL_Surface* img_surface = IMG_Load(char_buffer);
                     if (!img_surface) {
@@ -1096,16 +1311,48 @@ int main(int argc, char* args[]) {
                         ImVec2 icon_size = {32, 32};
                         ImTextureID icon_texture_ref;
                         if(ImGui::ImageButton(("##" + std::to_string(i)).c_str(), (ImTextureID)(intptr_t)tex_buffer, icon_size)){
-                            selected_icon_id = i;
-                            selected_icon_class = 3;
+                            selected_decorator_id = i;
+
+                            if(world.selected_world_icon){
+                                world.selected_world_icon->add_decorator(renderer, i, world.DecoratorIdMap);
+                            }
                         }
 
                         ImGui::SameLine(); ImGui::Text("ID:%d", i);
                     }
                 }
 
+                if(ImGui::Button("xx##decorator_deselect", ImVec2(32, 32))){
+                    selected_decorator_id = 0;
+                }
+                ImGui::SameLine(); ImGui::Text("Deselect");
+
                 ImGui::TreePop();
             }
+
+            ImGui::Text("Controls");
+            ImGui::Separator();
+
+            if (ImGui::Button("move icon")) {
+                moving_icon = !moving_icon;
+                std::cout << "Debug::ToggledMovingIcon" << std::endl;
+            }
+            ImGui::SameLine();
+            ImGui::Text(moving_icon ? "moving" : "not moving");
+
+            if (ImGui::Button("rotate icon")) {
+                rotating_icon = !rotating_icon;
+                std::cout << "Debug::ToggledRotatingIcon" << std::endl;
+            }
+            ImGui::SameLine();
+            ImGui::Text(rotating_icon ? "rotating" : "not rotating");
+
+            if (ImGui::Button("edit map")) {
+                editing_map = !editing_map;
+                std::cout << "Debug::ToggledEditingMode" << std::endl;
+            }
+            ImGui::SameLine();
+            ImGui::Text(editing_map ? "editing" : "interacting");
 
             ImGui::EndPopup();
         }
@@ -1145,9 +1392,11 @@ int main(int argc, char* args[]) {
             viewport_output_bounded.w = intersect.w * size_offset;
             viewport_output_bounded.h = intersect.h * size_offset;
 
-            SDL_RenderFillRect(renderer, &viewport_output_bounded);
+            if(world.HasInitializedCheck()){
+                SDL_RenderFillRect(renderer, &viewport_output_bounded);
 
-            world.draw_all(renderer, &viewport_source_lower, &viewport_source_upper, &viewport_output_bounded, size_offset, pan_offset_x, pan_offset_y);
+                world.draw_all(renderer, &viewport_source_lower, &viewport_source_upper, &viewport_output_bounded, size_offset, pan_offset_x, pan_offset_y);
+            }
         }
 
         // IMGUI
