@@ -16,6 +16,10 @@
 #include <variant>
 
 // --- CONFIG ---
+const ImVec4 info_color = {0.4f, 0.6f, 1.0f, 1.0f};
+const ImVec4 warning_color = {1.0f, 0.8f, 0.3f, 1.0f};
+const ImVec4 error_color = {1.0f, 0.3f, 0.3f, 1.0f};
+
 const int SCREEN_WIDTH = 1280; // Width of the window
 const int SCREEN_HEIGHT = 720; // Height of the window
 
@@ -33,11 +37,6 @@ inline void SetPixelGlobal(Uint32* pixels, int pitch, int x, int y, Uint8 r, Uin
 inline void SetPixelLocal(Uint32* pixels, int pitch, Uint8 r, Uint8 g, Uint8 b) {
     Uint32 color = (Uint32(r) << 24) | (Uint32(g) << 16) | (Uint32(b) << 8) | Uint32(255);
     pixels[0] = color;
-}
-
-void ToWorldCoordinates(float mouseX, float mouseY, float size_offset, float pan_offset_x, float pan_offset_y, float& worldX, float& worldY) {
-    worldX = static_cast<float>((mouseX / size_offset) + pan_offset_x);
-    worldY = static_cast<float>((mouseY / size_offset) + pan_offset_y);
 }
 
 double distanceSquared(double x1, double y1, double x2, double y2) {
@@ -169,9 +168,7 @@ struct IconMilitary : public IconBase {
         return output;
     }
 
-    SDL_FPoint GetPosition() const override {
-        return position;
-    }
+    SDL_FPoint GetPosition() const override { return position; }
 
     int GetIconId() const override {
         return icon_id;
@@ -284,13 +281,93 @@ struct IconMilitary : public IconBase {
     }
 };
 
+struct IconMarker : public IconBase {
+    SDL_Texture* icon_texture;
+    SDL_FPoint position;
+    float width, height, scale=1.0f;
+    int icon_id;
+};
+
+struct Shape {
+    int size = 0;
+    int capacity = 2;
+    SDL_FPoint* point_array;
+    uint8_t r=255, g=255, b=255, a=255;
+
+    Shape() {
+        point_array = new SDL_FPoint[capacity];
+    }
+
+    Shape(const Shape& other) {
+        size = other.size;
+        capacity = other.capacity;
+        r = other.r;
+        g = other.g;
+        b = other.b;
+        a = other.a;
+        point_array = new SDL_FPoint[capacity];
+        for (int i = 0; i < size; ++i) {
+            point_array[i] = other.point_array[i];
+        }
+    }
+
+    Shape& operator=(const Shape& other) {
+        if (this == &other) return *this;
+        delete[] point_array;
+
+        size = other.size;
+        capacity = other.capacity;
+        point_array = new SDL_FPoint[capacity];
+        for (int i = 0; i < size; ++i) {
+            point_array[i] = other.point_array[i];
+        }
+
+        return *this;
+    }
+
+    void AddPoint(SDL_FPoint position) {
+        if (size >= capacity) {
+            int new_capacity = capacity * 2;
+            SDL_FPoint* new_array = new SDL_FPoint[new_capacity];
+
+            for (int i = 0; i < size; ++i) {
+                new_array[i] = point_array[i];
+            }
+
+            delete[] point_array;
+            point_array = new_array;
+            capacity = new_capacity;
+        }
+
+        point_array[size++] = position;
+    }
+
+    const SDL_FPoint* GetPoints() const {
+        return point_array;
+    }
+
+    int GetSize() { return size; }
+
+    void ClearPoints() {
+        delete[] point_array;
+        capacity = 2;
+        size = 0;
+        point_array = new SDL_FPoint[capacity];
+    }
+
+    ~Shape() {
+        delete[] point_array;
+    }
+};
+
 struct IconLayer{
     std::string layer_name;
     bool visible = true;
 
     std::vector<IconCivilian> IconsCivilian;
     std::vector<IconMilitary> IconsMilitary;
-    // std::vector<Icon> IconsMarker;
+    // std::vector<IconMarker> IconsMarker;
+    std::vector<Shape> Shapes;
 
     IconCivilian& create_civilian_icon(SDL_Renderer* renderer, int icon_id, float pos_x, float pos_y, std::unordered_map<int, std::string>& idmap){
         IconCivilian icon;
@@ -312,6 +389,19 @@ struct IconLayer{
         IconsMilitary.push_back(icon);
 
         return IconsMilitary.back();
+    }
+
+    void create_shape(Shape shape, Uint8 r = 255, Uint8 g = 255, Uint8 b = 255, Uint8 a = 255){
+        if(shape.GetSize()>=2){
+            shape.r = r;
+            shape.g = g;
+            shape.b = b;
+            shape.a = a;
+            Shapes.push_back(shape);
+            std::cout<<"Debug::Shape::PushBack"<<std::endl;
+        } else {
+            std::cout<<"Debug::Shape::PushBack::Error"<<std::endl;
+        }
     }
 };
 
@@ -694,8 +784,31 @@ class World{
             };
             for (auto& icon_layer : IconLayers) {
                 const std::string& name = icon_layer.layer_name;
+                Uint8 r_, g_, b_, a_;
 
                 if(icon_layer.visible){
+                    for (auto& shape : icon_layer.Shapes) {
+                        const SDL_FPoint* points = shape.GetPoints();
+                        const int size_of_array = shape.GetSize();
+
+                        std::vector<SDL_FPoint> screen_points(size_of_array);
+                        for (int i = 0; i < size_of_array; ++i) {
+                            screen_points[i].x = (points[i].x - pan_offset_x) * scale_offset;
+                            screen_points[i].y = (points[i].y - pan_offset_y) * scale_offset;
+                        }
+
+                        SDL_GetRenderDrawColor(renderer, &r_, &g_, &b_, &a_);
+                        // honestly don't know if it's even efficient to do it this way, of saving and re-using the pointers;
+
+                        SDL_SetRenderDrawColor(renderer, shape.r, shape.g, shape.b, shape.a);
+
+                        if (SDL_RenderLines(renderer, screen_points.data(), size_of_array) < 0) {
+                            std::cerr << "Debug::RenderLines::Error::" << SDL_GetError() << std::endl;
+                        }
+
+                        SDL_SetRenderDrawColor(renderer, r_, g_, b_, a_);
+                    }
+
                     for (auto& icon : icon_layer.IconsCivilian) {
                         icon.render_to_view(renderer, output_viewport, scale_offset, pan_offset_x, pan_offset_y);
                     }
@@ -744,11 +857,6 @@ int main(int argc, char* args[]) {
 
     World world;
     world.discover_icons();
-    // world.set_world_size(600, 300);
-    // world.set_chunk_size(20, 20);
-    // auto [world_width_lower, world_height_lower] = world.get_world_size(false);
-    // auto [world_width_upper, world_height_upper] = world.get_world_size(true);
-    // auto [chunk_width, chunk_height] = world.get_chunk_size();
     int world_width_lower=1, world_height_lower=1, world_width_upper=1, world_height_upper=1, chunk_width=1, chunk_height=1;
 
     // ---
@@ -774,10 +882,15 @@ int main(int argc, char* args[]) {
 
     // constants for navigation
     std::string selected_layer;
+    std::string selected_linetool;
+    ImVec4 line_color;
+    Shape temporary_shape;
+    SDL_FPoint last_clicked_position = {0, 0};
+    bool pressed_first_line = false;
     int selected_decorator_id;
-    bool moving_icon=false;
-    bool rotating_icon=false;
-    bool editing_map=false;
+    bool moving_icon = false;
+    bool rotating_icon = false;
+    bool editing_map = false;
     int selected_icon_id;
     int selected_icon_class;
     int selected_tile_id = 0;
@@ -824,7 +937,8 @@ int main(int argc, char* args[]) {
             SDL_GetMouseState(&mouse_screenX, &mouse_screenY);
             // <float> mouse coordinates in world space
             float mouse_worldX, mouse_worldY;
-            ToWorldCoordinates(mouse_screenX, mouse_screenY, size_offset, pan_offset_x, pan_offset_y, mouse_worldX, mouse_worldY);
+            mouse_worldX = static_cast<float>((mouse_screenX / size_offset) + pan_offset_x);
+            mouse_worldY = static_cast<float>((mouse_screenY / size_offset) + pan_offset_y);
 
             // <int> X texture tile coordinate
             int textureX = static_cast<int>(mouse_worldX);
@@ -838,12 +952,17 @@ int main(int argc, char* args[]) {
 
             // Handle mouse button down events
             if (e.type == SDL_EVENT_MOUSE_BUTTON_DOWN) {
+                bool selected_layer_type;
+
+                if(!selected_layer.empty()){
+                    selected_layer_type = world.get_layer_type(selected_layer);
+                }
+
                 if (e.button.button == SDL_BUTTON_LEFT && !dont_let_passthrough) {
                     if(!selected_layer.empty()){
-                        bool selected_layer_type = world.get_layer_type(selected_layer);
                         if(selected_layer_type){ // IS WORLD_LAYER
                             if(editing_map){
-                                WorldLayer referenced_layer = world.get_worldlayer(selected_layer);
+                                WorldLayer& referenced_layer = world.get_worldlayer(selected_layer);
                                 bool is_upper_layer = referenced_layer.is_upper;
 
                                 int locking_coordinate_x, locking_coordinate_y;
@@ -886,6 +1005,19 @@ int main(int argc, char* args[]) {
                             }
                             if(selected_icon_class==3){
                                 std::cout<<"Debug::Placeholder"<<std::endl;
+                            }
+                        }
+
+                        if(selected_linetool == "add"){
+                            SDL_FPoint temporary_point = {mouse_worldX, mouse_worldY};
+
+                            if(pressed_first_line) {
+                                temporary_shape.AddPoint(temporary_point);
+                                std::cout<<"Added position to shape x:"<<mouse_worldX<<" y:"<<mouse_worldY<<std::endl;
+                            } else {
+                                temporary_shape.AddPoint(temporary_point);
+                                pressed_first_line = true;
+                                std::cout<<"Added first position to shape x:"<<mouse_worldX<<" y:"<<mouse_worldY<<std::endl;
                             }
                         }
 
@@ -936,6 +1068,22 @@ int main(int argc, char* args[]) {
 
                 }
                 if (e.button.button == SDL_BUTTON_RIGHT) {
+                    if(!selected_layer.empty()){
+                        if(!selected_layer_type){
+                            if(pressed_first_line){
+                                IconLayer& referenced_layer = world.get_iconlayer(selected_layer);
+                                int r=255, g=255, b=255;
+                                if(selected_tile_id){
+                                    auto it = world.TILE_ID_MAP.find(selected_tile_id);
+                                    std::tie(r, g, b) = it->second;
+                                }
+                                referenced_layer.create_shape(temporary_shape, r, g, b, 255);
+                                pressed_first_line = false;
+                                temporary_shape.ClearPoints();
+                            }
+                        }
+                    }
+
                     selected_icon_id = 0;
                     popup = !popup;
                     dragging = true;
@@ -1021,7 +1169,8 @@ int main(int argc, char* args[]) {
                 float afterzoom_screenX, afterzoom_screenY;
                 SDL_GetMouseState(&afterzoom_screenX, &afterzoom_screenY);
                 float afterzoom_worldX, afterzoom_worldY;
-                ToWorldCoordinates(afterzoom_screenX, afterzoom_screenY, size_offset, pan_offset_x, pan_offset_y, afterzoom_worldX, afterzoom_worldY);
+                afterzoom_worldX = static_cast<float>((afterzoom_screenX / size_offset) + pan_offset_x);
+                afterzoom_worldY = static_cast<float>((afterzoom_screenY / size_offset) + pan_offset_y);
 
                 pan_offset_x += (mouse_worldX - afterzoom_worldX);
                 pan_offset_y += (mouse_worldY - afterzoom_worldY);
@@ -1058,14 +1207,20 @@ int main(int argc, char* args[]) {
                 ImGui::Separator();
                 ImGui::TextColored(ImVec4(0.3f, 1.0f, 0.3f, 1.0f), "World creation");
 
+                ImGui::TextColored(error_color, "World has not been created/loaded, \nfill out parameters and create world \nor choose a world to load from the list.");
+
                 ImGui::InputText("world width", world_width_buffer, sizeof(world_width_buffer));
                 ImGui::InputText("world height", world_height_buffer, sizeof(world_height_buffer));
                 ImGui::InputText("chunk width", chunk_width_buffer, sizeof(chunk_width_buffer));
                 ImGui::InputText("chunk height", chunk_height_buffer, sizeof(chunk_height_buffer));
 
                 ImGui::Text("Will result in lower world size of %d %d", atoi(world_width_buffer)*atoi(chunk_width_buffer), atoi(world_height_buffer)*atoi(chunk_height_buffer));
+                if(atoi(world_width_buffer)*atoi(chunk_width_buffer)>=16384 || atoi(world_height_buffer)*atoi(chunk_height_buffer)>=16384){
+                    ImGui::TextColored(warning_color, "Warning! Max texture(layer) size is 16384, \nexpect crashes or buggy behaviour.");
+                    ImGui::TextColored(info_color, "Note: Expected to implement bigger worlds later.");
+                }
 
-                if(ImGui::Button("init world")){
+                if(ImGui::Button("Create world")){
                     world.set_world_size(atoi(world_width_buffer), atoi(world_height_buffer));
                     world.set_chunk_size(atoi(chunk_width_buffer), atoi(chunk_height_buffer));
                     auto [world_width_lower_intermitent, world_height_lower_intermitent] = world.get_world_size(false);
@@ -1084,111 +1239,113 @@ int main(int argc, char* args[]) {
                 ImGui::Separator();
             }
 
-            ImGui::Separator();
-            ImGui::TextColored(ImVec4(0.3f, 1.0f, 0.3f, 1.0f), "World editing");
+            if(world.HasInitializedCheck()){
+                ImGui::Separator();
+                ImGui::TextColored(ImVec4(0.3f, 1.0f, 0.3f, 1.0f), "World editing");
 
-            ImGui::InputText("layer name##01",buffer,sizeof(buffer));
+                ImGui::InputText("layer name##01",buffer,sizeof(buffer));
 
-            if(ImGui::Button("is upper?##02")){
-                upper = !upper;
-            }
-            ImGui::SameLine();
-            ImGui::Text(upper ? "Yes" : "No");
-
-            if(ImGui::Button("layer type##02")){
-                layer_type = !layer_type;
-            }
-            ImGui::SameLine();
-            ImGui::Text(layer_type ? "Icon" : "World");
-
-            if(ImGui::Button("create layer##03")){
-                if(layer_type){
-                    world.create_iconlayer(buffer);
-                } else {
-                    world.create_worldlayer(renderer,buffer,upper);
+                if(ImGui::Button("is upper?##02")){
+                    upper = !upper;
                 }
-            }
+                ImGui::SameLine();
+                ImGui::Text(upper ? "Yes" : "No");
 
-            if (ImGui::TreeNode("Layers")) {
-                if (ImGui::TreeNode("Icon Layers")) {
-                    const auto& iconLayers = world.GetIconLayers();
-                    int total = static_cast<int>(iconLayers.size());
+                if(ImGui::Button("layer type##02")){
+                    layer_type = !layer_type;
+                }
+                ImGui::SameLine();
+                ImGui::Text(layer_type ? "Icon" : "World");
 
-                    for (auto it = iconLayers.rbegin(); it != iconLayers.rend(); ++it) {
-                        int reverse_index = std::distance(iconLayers.rbegin(), it);
-                        int actual_index = total - 1 - reverse_index;
+                if(ImGui::Button("create layer##03")){
+                    if(layer_type){
+                        world.create_iconlayer(buffer);
+                    } else {
+                        world.create_worldlayer(renderer,buffer,upper);
+                    }
+                }
 
-                        std::string layer_name = it->layer_name;
+                if (ImGui::TreeNode("Layers")) {
+                    if (ImGui::TreeNode("Icon Layers")) {
+                        const auto& iconLayers = world.GetIconLayers();
+                        int total = static_cast<int>(iconLayers.size());
 
-                        if (ImGui::Button(layer_name.c_str())) {
-                            selected_layer = layer_name;
-                            std::cout << "Debug::SelectedLayer::IconLayer::" << layer_name << std::endl;
+                        for (auto it = iconLayers.rbegin(); it != iconLayers.rend(); ++it) {
+                            int reverse_index = std::distance(iconLayers.rbegin(), it);
+                            int actual_index = total - 1 - reverse_index;
+
+                            std::string layer_name = it->layer_name;
+
+                            if (ImGui::Button(layer_name.c_str())) {
+                                selected_layer = layer_name;
+                                std::cout << "Debug::SelectedLayer::IconLayer::" << layer_name << std::endl;
+                            }
+
+                            ImGui::SameLine();
+                            if (ImGui::Button(("toggle##" + layer_name).c_str())) {
+                                world.toggle_visibility_layer(layer_name);
+                                std::cout << "Debug::ToggledVisibility::IconLayer::" << layer_name << std::endl;
+                            }
+                            ImGui::SameLine();
+                            if (ImGui::Button(("+##" + layer_name).c_str())) {
+                                world.MoveIconLayer(actual_index, false);
+                            }
+                            ImGui::SameLine();
+                            if (ImGui::Button(("-##" + layer_name).c_str())) {
+                                world.MoveIconLayer(actual_index, true);
+                            }
+                            ImGui::SameLine();
+                            ImGui::Text(it->visible ? "Visible" : "Hidden");
                         }
 
-                        ImGui::SameLine();
-                        if (ImGui::Button(("toggle##" + layer_name).c_str())) {
-                            world.toggle_visibility_layer(layer_name);
-                            std::cout << "Debug::ToggledVisibility::IconLayer::" << layer_name << std::endl;
+                        ImGui::TreePop();
+                    }
+
+                    if (ImGui::TreeNode("World Layers")) {
+                        const auto& layers = world.GetWorldLayers();
+                        int total = static_cast<int>(layers.size());
+
+                        for (auto it = layers.rbegin(); it != layers.rend(); ++it) {
+                            int reverse_index = std::distance(layers.rbegin(), it);
+                            int actual_index = total - 1 - reverse_index;
+
+                            std::string layer_name = it->layer_name;
+
+                            if (ImGui::Button(layer_name.c_str())) {
+                                selected_layer = layer_name;
+                                std::cout << "Debug::SelectedLayer::WorldLayer::" << layer_name << std::endl;
+                            }
+
+                            ImGui::SameLine();
+                            if (ImGui::Button(("toggle##" + layer_name).c_str())) {
+                                world.toggle_visibility_layer(layer_name);
+                                std::cout << "Debug::ToggledVisibility::WorldLayer::" << layer_name << std::endl;
+                            }
+                            ImGui::SameLine();
+                            if (ImGui::Button(("+##" + layer_name).c_str())) {
+                                world.MoveWorldLayer(actual_index, false);
+                            }
+                            ImGui::SameLine();
+                            if (ImGui::Button(("-##" + layer_name).c_str())) {
+                                world.MoveWorldLayer(actual_index, true);
+                            }
+                            ImGui::SameLine();
+                            ImGui::Text(it->visible ? "Visible" : "Hidden");
                         }
-                        ImGui::SameLine();
-                        if (ImGui::Button(("+##" + layer_name).c_str())) {
-                            world.MoveIconLayer(actual_index, false);
-                        }
-                        ImGui::SameLine();
-                        if (ImGui::Button(("-##" + layer_name).c_str())) {
-                            world.MoveIconLayer(actual_index, true);
-                        }
-                        ImGui::SameLine();
-                        ImGui::Text(it->visible ? "Visible" : "Hidden");
+
+                        ImGui::TreePop();
                     }
 
                     ImGui::TreePop();
                 }
-
-                if (ImGui::TreeNode("World Layers")) {
-                    const auto& layers = world.GetWorldLayers();
-                    int total = static_cast<int>(layers.size());
-
-                    for (auto it = layers.rbegin(); it != layers.rend(); ++it) {
-                        int reverse_index = std::distance(layers.rbegin(), it);
-                        int actual_index = total - 1 - reverse_index;
-
-                        std::string layer_name = it->layer_name;
-
-                        if (ImGui::Button(layer_name.c_str())) {
-                            selected_layer = layer_name;
-                            std::cout << "Debug::SelectedLayer::WorldLayer::" << layer_name << std::endl;
-                        }
-
-                        ImGui::SameLine();
-                        if (ImGui::Button(("toggle##" + layer_name).c_str())) {
-                            world.toggle_visibility_layer(layer_name);
-                            std::cout << "Debug::ToggledVisibility::WorldLayer::" << layer_name << std::endl;
-                        }
-                        ImGui::SameLine();
-                        if (ImGui::Button(("+##" + layer_name).c_str())) {
-                            world.MoveWorldLayer(actual_index, false);
-                        }
-                        ImGui::SameLine();
-                        if (ImGui::Button(("-##" + layer_name).c_str())) {
-                            world.MoveWorldLayer(actual_index, true);
-                        }
-                        ImGui::SameLine();
-                        ImGui::Text(it->visible ? "Visible" : "Hidden");
-                    }
-
-                    ImGui::TreePop();
-                }
-
-                ImGui::TreePop();
+                ImGui::Separator();
             }
-            ImGui::Separator();
 
             if(world.selected_world_icon){
                 ImGui::Separator();
                 ImGui::TextColored(ImVec4(0.3f, 1.0f, 0.3f, 1.0f), "Icon parameters");
 
-                ImGui::Text("%d", world.selected_world_icon->GetIconId());
+                ImGui::Text("Icon id: %d", world.selected_world_icon->GetIconId());
 
                 if(ImGui::Button("Wipe decorators")){
                     world.selected_world_icon->clear_decorators();
@@ -1354,6 +1511,16 @@ int main(int argc, char* args[]) {
             ImGui::SameLine();
             ImGui::Text(editing_map ? "editing" : "interacting");
 
+            ImGui::Separator();
+            ImGui::Text("Line tools");
+
+            if(ImGui::Button("Add p")){
+                selected_linetool = "add";
+            }
+            if(ImGui::Button("Rmv p")){
+                selected_linetool = "add";
+            }
+            
             ImGui::EndPopup();
         }
 
@@ -1394,7 +1561,8 @@ int main(int argc, char* args[]) {
 
             if(world.HasInitializedCheck()){
                 SDL_RenderFillRect(renderer, &viewport_output_bounded);
-
+                
+                SDL_SetRenderDrawColor(renderer, 255, 255, 255, 255);
                 world.draw_all(renderer, &viewport_source_lower, &viewport_source_upper, &viewport_output_bounded, size_offset, pan_offset_x, pan_offset_y);
             }
         }
