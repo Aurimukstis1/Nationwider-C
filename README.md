@@ -5,7 +5,8 @@ With additional SDL3_image library.
 With additional Dear ImGui library.
 
 Integrates **Amazon AWS S3** for savefile sharing between Nationwide hosts and players.  
-*Note: Will most likely create several different modules to use with different file hosting providers, such as: Hetzner.*
+>[!NOTE]
+>Will most likely create several different modules to use with different file hosting providers, such as: Hetzner.*
 
 ---
 Building:
